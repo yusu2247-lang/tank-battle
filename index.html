@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tank Battle</title>
+<link rel="icon" href="data:,">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0f12; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; user-select: none; }
+  #game { display: block; cursor: crosshair; }
+
+  .overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: rgba(8, 10, 14, 0.82); color: #e8ecf1; z-index: 10;
+    text-align: center; backdrop-filter: blur(3px);
+  }
+  .overlay.hidden { display: none; }
+  .overlay h1 {
+    font-size: 56px; letter-spacing: 6px; font-weight: 800;
+    color: #ffb347; text-shadow: 0 0 24px rgba(255, 179, 71, 0.5);
+  }
+  .overlay h1.danger { color: #ff5d5d; text-shadow: 0 0 24px rgba(255, 93, 93, 0.5); }
+  .overlay p { color: #aab4c0; font-size: 16px; line-height: 1.7; }
+  .overlay .keys { color: #7fc8ff; }
+  .overlay button {
+    margin-top: 10px; padding: 14px 44px; font-size: 20px; font-weight: 700;
+    letter-spacing: 2px; color: #10131a; background: #ffb347; border: none;
+    border-radius: 8px; cursor: pointer; transition: transform .12s, background .12s;
+  }
+  .overlay button:hover { background: #ffc875; transform: scale(1.05); }
+  #finalStats { font-size: 20px; color: #ffd9a0; }
+
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; padding: 14px 18px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    color: #e8ecf1; z-index: 5; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  }
+  #hpWrap { width: 240px; }
+  #hpLabel { font-size: 12px; letter-spacing: 2px; margin-bottom: 4px; color: #9fb0c3; }
+  #hpBarBg { height: 16px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
+  #hpBar { height: 100%; width: 100%; background: linear-gradient(90deg, #59d162, #a5e86b); transition: width .15s; }
+  #hpBar.low { background: linear-gradient(90deg, #d14b4b, #e86b6b); }
+  #waveInfo { font-size: 20px; font-weight: 700; letter-spacing: 3px; }
+  #waveInfo small { display: block; font-size: 12px; color: #9fb0c3; letter-spacing: 1px; margin-top: 2px; }
+  #scoreInfo { font-size: 20px; font-weight: 700; letter-spacing: 2px; text-align: right; }
+  #scoreInfo small { display: block; font-size: 12px; color: #9fb0c3; letter-spacing: 1px; margin-top: 2px; }
+  #minimap {
+    position: fixed; right: 18px; bottom: 18px; z-index: 5;
+    border: 1px solid rgba(255,255,255,.25); border-radius: 4px;
+    background: rgba(10,12,16,.6); pointer-events: none;
+  }
+  #hint {
+    position: fixed; bottom: 18px; left: 18px; z-index: 5; color: #66727f;
+    font-size: 12px; letter-spacing: 1px; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="hpWrap">
+    <div id="hpLabel">HULL INTEGRITY</div>
+    <div id="hpBarBg"><div id="hpBar"></div></div>
+  </div>
+  <div id="waveInfo">WAVE 1<small id="enemiesLeft">ENEMIES: 0</small></div>
+  <div id="scoreInfo"><span id="score">0</span><small>PTS</small></div>
+</div>
+<canvas id="minimap" width="156" height="96"></canvas>
+<div id="hint">WASD move &nbsp;·&nbsp; MOUSE aim &nbsp;·&nbsp; CLICK / SPACE fire &nbsp;·&nbsp; P pause &nbsp;·&nbsp; M mute</div>
+
+<div id="menu" class="overlay">
+  <h1>TANK BATTLE</h1>
+  <p>
+    Survive endless waves of enemy armor.<br>
+    <span class="keys">W A S D</span> — drive &nbsp;·&nbsp; <span class="keys">MOUSE</span> — aim turret<br>
+    <span class="keys">CLICK / SPACE</span> — fire &nbsp;·&nbsp; <span class="keys">P</span> — pause &nbsp;·&nbsp; <span class="keys">M</span> — mute<br>
+    Destroy crates for repair kits. Good luck, commander.
+  </p>
+  <button id="startBtn">DEPLOY</button>
+</div>
+
+<div id="gameover" class="overlay hidden">
+  <h1 class="danger">TANK DESTROYED</h1>
+  <p id="finalStats"></p>
+  <button id="restartBtn">RE-DEPLOY</button>
+</div>
+
+<div id="paused" class="overlay hidden">
+  <h1>PAUSED</h1>
+  <p>Press <span class="keys">P</span> to resume</p>
+</div>
+
+<script>
+'use strict';
+// ============================================================
+//  TANK BATTLE — a single-file canvas game
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const minimap = document.getElementById('minimap');
+const mctx = minimap.getContext('2d');
+
+const ARENA_W = 1920, ARENA_H = 1080;
+const WALL_COLOR = '#5a6472', CRATE_COLOR = '#8a6a42';
+const PLAYER_COLOR = '#5aa84f', ENEMY_COLOR = '#c94f4f';
+
+let viewW = 0, viewH = 0;
+function resize() {
+  viewW = canvas.width = window.innerWidth;
+  viewH = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------------- utils ----------------
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+const rand = (a, b) => a + Math.random() * (b - a);
+const angleTo = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
+// shortest signed angular difference a->b
+function angDiff(a, b) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+function angleLerp(a, b, t) { return a + angDiff(a, b) * clamp(t, 0, 1); }
+// circle vs axis-aligned rect: returns push vector or null
+function circleRectPush(cx, cy, r, rect) {
+  const nx = clamp(cx, rect.x, rect.x + rect.w);
+  const ny = clamp(cy, rect.y, rect.y + rect.h);
+  let dx = cx - nx, dy = cy - ny;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= r * r) return null;
+  if (d2 === 0) { // center inside rect — push along smallest exit
+    const l = cx - rect.x, rr = rect.x + rect.w - cx, t = cy - rect.y, b = rect.y + rect.h - cy;
+    const m = Math.min(l, rr, t, b);
+    if (m === l) return { x: -(l + r), y: 0 };
+    if (m === rr) return { x: rr + r, y: 0 };
+    if (m === t) return { x: 0, y: -(t + r) };
+    return { x: 0, y: b + r };
+  }
+  const d = Math.sqrt(d2), push = r - d;
+  return { x: (dx / d) * push, y: (dy / d) * push };
+}
+function pointInRect(x, y, rect) {
+  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+}
+// line of sight between two points, sampled against solid walls
+function hasLOS(x1, y1, x2, y2) {
+  const d = dist(x1, y1, x2, y2);
+  const steps = Math.ceil(d / 10);
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps, px = x1 + (x2 - x1) * t, py = y1 + (y2 - y1) * t;
+    for (const w of walls) {
+      if (!w.dead && pointInRect(px, py, w)) return false;
+    }
+  }
+  return true;
+}
+
+// ---------------- audio ----------------
+let audioCtx = null, muted = false;
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+function tone(freq, dur, type, vol, slideTo) {
+  if (!audioCtx || muted) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, audioCtx.currentTime + dur);
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + dur);
+}
+function noiseBurst(dur, vol, cutoff) {
+  if (!audioCtx || muted) return;
+  const n = audioCtx.sampleRate * dur;
+  const buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+  const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(vol, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  src.connect(f).connect(g).connect(audioCtx.destination);
+  src.start();
+}
+const sfx = {
+  shoot()     { tone(220, 0.12, 'square', 0.10, 60); noiseBurst(0.08, 0.10, 3000); },
+  enemyShoot(){ tone(160, 0.12, 'square', 0.07, 50); noiseBurst(0.08, 0.07, 2200); },
+  hit()       { tone(90, 0.10, 'sawtooth', 0.12, 40); },
+  explosion() { noiseBurst(0.5, 0.35, 900); tone(60, 0.4, 'sine', 0.25, 25); },
+  pickup()    { tone(520, 0.08, 'sine', 0.15); setTimeout(() => tone(780, 0.1, 'sine', 0.15), 80); },
+  wave()      { tone(330, 0.15, 'triangle', 0.15); setTimeout(() => tone(440, 0.2, 'triangle', 0.15), 150); },
+};
+
+// ---------------- game state ----------------
+let state = 'menu'; // menu | playing | paused | gameover
+let walls = [], tanks = [], bullets = [], particles = [], pickups = [], tracks = [];
+let player = null;
+let wave = 0, score = 0, kills = 0;
+let spawnQueue = 0, spawnTimer = 0, waveBreak = 0;
+let shake = 0, lastTrack = 0, gameTime = 0;
+
+const keys = {};
+const mouse = { x: 0, y: 0, down: false };
+
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyM') muted = !muted;
+  if (e.code === 'KeyP' && (state === 'playing' || state === 'paused')) togglePause();
+  if (e.code === 'Enter' && (state === 'menu' || state === 'gameover')) startGame();
+  ensureAudio();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; ensureAudio(); });
+window.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+
+// ---------------- world building ----------------
+function buildWalls() {
+  walls = [];
+  // destructible crates
+  for (let i = 0; i < 12; i++) {
+    const s = rand(38, 54);
+    const x = rand(120, ARENA_W - 120 - s), y = rand(120, ARENA_H - 120 - s);
+    if (dist(x + s / 2, y + s / 2, ARENA_W / 2, ARENA_H / 2) < 260) { i--; continue; }
+    walls.push({ x, y, w: s, h: s, destructible: true, hp: 30, dead: false });
+  }
+  // solid blocks
+  for (let i = 0; i < 10; i++) {
+    const horiz = Math.random() < 0.5;
+    const w = horiz ? rand(140, 260) : rand(30, 46);
+    const h = horiz ? rand(30, 46) : rand(140, 260);
+    const x = rand(100, ARENA_W - 100 - w), y = rand(100, ARENA_H - 100 - h);
+    if (dist(x + w / 2, y + h / 2, ARENA_W / 2, ARENA_H / 2) < 300) { i--; continue; }
+    walls.push({ x, y, w, h, destructible: false, hp: Infinity, dead: false });
+  }
+}
+
+function makeTank(x, y, isPlayer) {
+  return {
+    x, y, bodyAngle: isPlayer ? -Math.PI / 2 : rand(0, Math.PI * 2),
+    turretAngle: 0, vx: 0, vy: 0,
+    radius: 20, hp: isPlayer ? 100 : 55, maxHp: isPlayer ? 100 : 55,
+    speed: isPlayer ? 175 : rand(95, 125) + wave * 4,
+    rotSpeed: isPlayer ? 3.1 : 2.4,
+    cooldown: 0, fireRate: isPlayer ? 0.28 : Math.max(0.55, 1.35 - wave * 0.07),
+    color: isPlayer ? PLAYER_COLOR : ENEMY_COLOR,
+    isPlayer,
+    // AI memory
+    stuck: 0, wanderDir: 0, wanderTime: 0, aimError: Math.max(0.03, 0.22 - wave * 0.012),
+    trackTimer: 0,
+  };
+}
+
+function spawnEnemy() {
+  // spawn near a random edge, away from the player
+  let x, y, tries = 0;
+  do {
+    const side = Math.floor(rand(0, 4));
+    if (side === 0) { x = rand(60, ARENA_W - 60); y = 70; }
+    else if (side === 1) { x = rand(60, ARENA_W - 60); y = ARENA_H - 70; }
+    else if (side === 2) { x = 70; y = rand(60, ARENA_H - 60); }
+    else { x = ARENA_W - 70; y = rand(60, ARENA_H - 60); }
+  } while (dist(x, y, player.x, player.y) < 420 && ++tries < 20);
+  const t = makeTank(x, y, false);
+  t.hp = t.maxHp = 55 + wave * 8;
+  tanks.push(t);
+  spawnParticles(x, y, 12, ENEMY_COLOR, 120);
+}
+
+function startGame() {
+  ensureAudio();
+  buildWalls();
+  bullets = []; particles = []; pickups = []; tracks = [];
+  player = makeTank(ARENA_W / 2, ARENA_H / 2, true);
+  tanks = [player];
+  wave = 0; score = 0; kills = 0; gameTime = 0; shake = 0;
+  state = 'playing';
+  document.getElementById('menu').classList.add('hidden');
+  document.getElementById('gameover').classList.add('hidden');
+  document.getElementById('paused').classList.add('hidden');
+  nextWave();
+}
+
+function nextWave() {
+  wave++;
+  spawnQueue = Math.min(2 + wave, 12);
+  spawnTimer = 0.5;
+  waveBreak = 0;
+  sfx.wave();
+}
+
+function togglePause() {
+  state = state === 'playing' ? 'paused' : 'playing';
+  document.getElementById('paused').classList.toggle('hidden', state !== 'paused');
+}
+
+function gameOver() {
+  state = 'gameover';
+  spawnParticles(player.x, player.y, 60, '#ffb347', 260);
+  spawnParticles(player.x, player.y, 40, '#ff5d5d', 200);
+  sfx.explosion();
+  document.getElementById('finalStats').innerHTML =
+    `You reached <b>wave ${wave}</b> · destroyed <b>${kills}</b> tanks · scored <b>${score}</b> pts`;
+  document.getElementById('gameover').classList.remove('hidden');
+}
+
+// ---------------- particles / fx ----------------
+function spawnParticles(x, y, count, color, speed) {
+  for (let i = 0; i < count; i++) {
+    const a = rand(0, Math.PI * 2), s = rand(speed * 0.3, speed);
+    particles.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: rand(0.3, 0.8), maxLife: 0.8, size: rand(2, 5), color,
+    });
+  }
+  if (particles.length > 900) particles.splice(0, particles.length - 900);
+}
+
+function explode(x, y, big) {
+  spawnParticles(x, y, big ? 50 : 25, '#ff9a3c', big ? 240 : 170);
+  spawnParticles(x, y, big ? 30 : 14, '#555b63', 90);
+  shake = Math.min(shake + (big ? 14 : 6), 22);
+  sfx.explosion();
+}
+
+// ---------------- combat ----------------
+function fire(tank) {
+  const a = tank.turretAngle;
+  const mx = tank.x + Math.cos(a) * 30, my = tank.y + Math.sin(a) * 30;
+  bullets.push({
+    x: mx, y: my,
+    vx: Math.cos(a) * 560, vy: Math.sin(a) * 560,
+    radius: 4, life: 1.8,
+    fromPlayer: tank.isPlayer,
+    damage: tank.isPlayer ? 26 : 12,
+  });
+  spawnParticles(mx, my, 5, '#ffe08a', 140);
+  tank.isPlayer ? sfx.shoot() : sfx.enemyShoot();
+  // recoil
+  tank.x -= Math.cos(a) * 1.5; tank.y -= Math.sin(a) * 1.5;
+}
+
+function damageWall(w, dmg, hx, hy) {
+  if (!w.destructible) { spawnParticles(hx, hy, 4, '#9aa5b1', 90); return; }
+  w.hp -= dmg;
+  spawnParticles(hx, hy, 5, CRATE_COLOR, 110);
+  if (w.hp <= 0) {
+    w.dead = true;
+    spawnParticles(w.x + w.w / 2, w.y + w.h / 2, 22, CRATE_COLOR, 170);
+    sfx.hit();
+    // drop a repair kit sometimes
+    if (Math.random() < 0.4) {
+      pickups.push({ x: w.x + w.w / 2, y: w.y + w.h / 2, radius: 13, type: 'repair', life: 20, pulse: 0 });
+    }
+  }
+}
+
+function damageTank(tank, dmg, bx, by) {
+  tank.hp -= dmg;
+  spawnParticles(bx, by, 6, '#ffd27a', 130);
+  if (tank.isPlayer) { shake = Math.min(shake + 5, 20); sfx.hit(); }
+  if (tank.hp <= 0 && !tank.dead) {
+    tank.dead = true;
+    explode(tank.x, tank.y, true);
+    if (!tank.isPlayer) {
+      kills++;
+      score += 100 + wave * 25;
+    }
+  }
+}
+
+// ---------------- update ----------------
+function resolveWalls(t) {
+  for (const w of walls) {
+    if (w.dead) continue;
+    const p = circleRectPush(t.x, t.y, t.radius, w);
+    if (p) { t.x += p.x; t.y += p.y; t.blocked = true; }
+  }
+  t.x = clamp(t.x, t.radius, ARENA_W - t.radius);
+  t.y = clamp(t.y, t.radius, ARENA_H - t.radius);
+}
+
+function updatePlayer(dt) {
+  const p = player;
+  let move = 0;
+  if (keys['KeyW'] || keys['ArrowUp']) move = 1;
+  if (keys['KeyS'] || keys['ArrowDown']) move = -1;
+  let turn = 0;
+  if (keys['KeyA'] || keys['ArrowLeft']) turn = -1;
+  if (keys['KeyD'] || keys['ArrowRight']) turn = 1;
+  p.bodyAngle += turn * p.rotSpeed * dt;
+  if (move !== 0) {
+    p.x += Math.cos(p.bodyAngle) * p.speed * move * dt;
+    p.y += Math.sin(p.bodyAngle) * p.speed * move * dt;
+    p.moving = true;
+  } else p.moving = false;
+  resolveWalls(p);
+  // turret follows mouse (mouse is screen-space → convert to world)
+  const worldMouse = screenToWorld(mouse.x, mouse.y);
+  p.turretAngle = angleTo(p.x, p.y, worldMouse.x, worldMouse.y);
+  p.cooldown -= dt;
+  if ((mouse.down || keys['Space']) && p.cooldown <= 0) {
+    fire(p);
+    p.cooldown = p.fireRate;
+  }
+  leaveTracks(p, dt);
+}
+
+function updateEnemy(t, dt) {
+  const p = player;
+  const d = dist(t.x, t.y, p.x, p.y);
+  const toPlayer = angleTo(t.x, t.y, p.x, p.y);
+
+  // --- decide steering ---
+  let desiredMove;
+  if (t.wanderTime > 0) {
+    t.wanderTime -= dt;
+    desiredMove = toPlayer + t.wanderDir;
+  } else {
+    // hold a ring around the player
+    const ideal = 300;
+    desiredMove = d > ideal + 60 ? toPlayer
+                : d < ideal - 60 ? toPlayer + Math.PI
+                : toPlayer + (t.id % 2 === 0 ? Math.PI / 2 : -Math.PI / 2);
+  }
+  // unstick: if barely moved while trying, veer off for a while
+  if (t.blocked && t.wanderTime <= 0) {
+    t.stuck += dt;
+    if (t.stuck > 0.25) {
+      t.wanderDir = (Math.random() < 0.5 ? 1 : -1) * rand(0.6, 1.6);
+      t.wanderTime = rand(0.5, 1.0);
+      t.stuck = 0;
+    }
+  } else t.stuck = Math.max(0, t.stuck - dt);
+
+  // rotate body toward movement, then drive
+  const turn = angDiff(t.bodyAngle, desiredMove);
+  t.bodyAngle += clamp(turn, -t.rotSpeed * dt, t.rotSpeed * dt);
+  if (Math.abs(turn) < 1.4) {
+    const px = t.x, py = t.y;
+    t.x += Math.cos(t.bodyAngle) * t.speed * dt;
+    t.y += Math.sin(t.bodyAngle) * t.speed * dt;
+    t.moving = dist(px, py, t.x, t.y) > t.speed * dt * 0.3;
+    t.blocked = false;
+  } else t.moving = false;
+  resolveWalls(t);
+
+  // separation from other tanks
+  for (const o of tanks) {
+    if (o === t || o.dead) continue;
+    const dd = dist(t.x, t.y, o.x, o.y), min = t.radius + o.radius;
+    if (dd < min && dd > 0.01) {
+      const push = (min - dd) / 2, a = angleTo(o.x, o.y, t.x, t.y);
+      t.x += Math.cos(a) * push; t.y += Math.sin(a) * push;
+    }
+  }
+
+  // --- aiming & firing ---
+  if (d < 640 && hasLOS(t.x, t.y, p.x, p.y)) {
+    // lead the target
+    const lead = d / 560;
+    const tx = p.x + (p.vx || 0) * lead, ty = p.y + (p.vy || 0) * lead;
+    const aim = angleTo(t.x, t.y, tx, ty) + rand(-t.aimError, t.aimError);
+    t.turretAngle = angleLerp(t.turretAngle, aim, 6 * dt);
+    t.cooldown -= dt;
+    if (t.cooldown <= 0 && Math.abs(angDiff(t.turretAngle, aim)) < 0.15) {
+      fire(t);
+      t.cooldown = t.fireRate * rand(0.8, 1.4);
+    }
+  } else {
+    t.turretAngle = angleLerp(t.turretAngle, t.bodyAngle, 4 * dt);
+    t.cooldown -= dt * 0.5;
+  }
+  leaveTracks(t, dt);
+}
+
+function leaveTracks(t, dt) {
+  t.trackTimer -= dt;
+  if (t.moving && t.trackTimer <= 0) {
+    t.trackTimer = 0.05;
+    const side = t.radius * 0.8;
+    const px = -Math.sin(t.bodyAngle), py = Math.cos(t.bodyAngle);
+    tracks.push({
+      x1: t.x + px * side, y1: t.y + py * side,
+      x2: t.x - px * side, y2: t.y - py * side,
+      a: t.bodyAngle, alpha: 0.35,
+    });
+    if (tracks.length > 500) tracks.splice(0, tracks.length - 500);
+  }
+}
+
+function updateBullets(dt) {
+  for (const b of bullets) {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+    if (b.life <= 0) { b.dead = true; continue; }
+    if (b.x < 0 || b.x > ARENA_W || b.y < 0 || b.y > ARENA_H) { b.dead = true; continue; }
+    // walls
+    for (const w of walls) {
+      if (w.dead) continue;
+      if (pointInRect(b.x, b.y, w)) {
+        damageWall(w, b.damage, b.x, b.y);
+        b.dead = true; break;
+      }
+    }
+    if (b.dead) continue;
+    // tanks
+    for (const t of tanks) {
+      if (t.dead) continue;
+      if (b.fromPlayer && !t.isPlayer && dist(b.x, b.y, t.x, t.y) < t.radius + b.radius) {
+        damageTank(t, b.damage, b.x, b.y); b.dead = true; break;
+      }
+      if (!b.fromPlayer && t.isPlayer && dist(b.x, b.y, t.x, t.y) < t.radius + b.radius) {
+        damageTank(t, b.damage, b.x, b.y); b.dead = true; break;
+      }
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+}
+
+function updatePickups(dt) {
+  for (const pk of pickups) {
+    pk.life -= dt; pk.pulse += dt;
+    if (pk.life <= 0) { pk.dead = true; continue; }
+    if (dist(pk.x, pk.y, player.x, player.y) < pk.radius + player.radius) {
+      if (pk.type === 'repair') {
+        player.hp = Math.min(player.maxHp, player.hp + 30);
+        sfx.pickup();
+        spawnParticles(pk.x, pk.y, 12, '#7de88a', 120);
+      }
+      pk.dead = true;
+    }
+  }
+  pickups = pickups.filter(p => !p.dead);
+}
+
+function updateParticles(dt) {
+  for (const pt of particles) {
+    pt.x += pt.vx * dt; pt.y += pt.vy * dt;
+    pt.vx *= 0.94; pt.vy *= 0.94;
+    pt.life -= dt;
+  }
+  particles = particles.filter(p => p.life > 0);
+  for (const tr of tracks) tr.alpha -= dt * 0.09;
+  tracks = tracks.filter(t => t.alpha > 0);
+}
+
+// give enemies stable ids for orbit direction
+let nextId = 0;
+
+function update(dt) {
+  gameTime += dt;
+  updatePlayer(dt);
+  for (const t of tanks) {
+    if (!t.isPlayer && !t.dead) updateEnemy(t, dt);
+  }
+  // track player velocity for enemy leading
+  player.vx = player.moving ? Math.cos(player.bodyAngle) * player.speed * (keys['KeyS'] ? -1 : 1) : 0;
+  player.vy = player.moving ? Math.sin(player.bodyAngle) * player.speed * (keys['KeyS'] ? -1 : 1) : 0;
+
+  updateBullets(dt);
+  updatePickups(dt);
+  updateParticles(dt);
+
+  // cleanup dead tanks
+  for (const t of tanks) {
+    if (!t.isPlayer && t.dead && !t.counted) { t.counted = true; }
+  }
+  tanks = tanks.filter(t => t.isPlayer || !t.dead);
+
+  if (player.dead) { gameOver(); return; }
+
+  // wave spawning
+  if (spawnQueue > 0) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) { spawnEnemy(); spawnQueue--; spawnTimer = rand(0.5, 0.9); }
+  } else if (tanks.length === 1) { // only player left
+    waveBreak += dt;
+    if (waveBreak > 2) nextWave();
+  }
+
+  shake = Math.max(0, shake - dt * 30);
+}
+
+// ---------------- camera / rendering ----------------
+function screenToWorld(sx, sy) {
+  const cam = getCam();
+  return { x: sx + cam.x, y: sy + cam.y };
+}
+function getCam() {
+  let cx = player.x - viewW / 2, cy = player.y - viewH / 2;
+  cx = ARENA_W <= viewW ? (ARENA_W - viewW) / 2 : clamp(cx, 0, ARENA_W - viewW);
+  cy = ARENA_H <= viewH ? (ARENA_H - viewH) / 2 : clamp(cy, 0, ARENA_H - viewH);
+  return { x: cx, y: cy };
+}
+
+function drawTank(t) {
+  ctx.save();
+  ctx.translate(t.x, t.y);
+  // tracks
+  ctx.save();
+  ctx.rotate(t.bodyAngle);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(-24, -22, 48, 9);
+  ctx.fillRect(-24, 13, 48, 9);
+  // hull
+  ctx.fillStyle = t.color;
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(-22, -14, 44, 28, 6);
+  ctx.fill(); ctx.stroke();
+  // front wedge marker
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.beginPath();
+  ctx.moveTo(22, 0); ctx.lineTo(10, -14); ctx.lineTo(10, 14);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  // turret
+  ctx.rotate(t.turretAngle);
+  ctx.fillStyle = t.color;
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(6, -3.5, 28, 7);
+  ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.arc(-3, -3, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  // hp bar for damaged non-player tanks
+  if (!t.isPlayer && t.hp < t.maxHp) {
+    const w = 40, pct = clamp(t.hp / t.maxHp, 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(t.x - w / 2, t.y - 36, w, 5);
+    ctx.fillStyle = '#e05b5b';
+    ctx.fillRect(t.x - w / 2, t.y - 36, w * pct, 5);
+  }
+}
+
+function render() {
+  const cam = getCam();
+  ctx.save();
+  ctx.translate(-cam.x, -cam.y);
+  if (shake > 0) ctx.translate(rand(-shake, shake) * 0.5, rand(-shake, shake) * 0.5);
+
+  // ground
+  ctx.fillStyle = '#171b21';
+  ctx.fillRect(cam.x - 20, cam.y - 20, viewW + 40, viewH + 40);
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+  ctx.lineWidth = 1;
+  const gs = 64;
+  const gx0 = Math.floor(cam.x / gs) * gs, gy0 = Math.floor(cam.y / gs) * gs;
+  ctx.beginPath();
+  for (let x = gx0; x < cam.x + viewW + gs; x += gs) { ctx.moveTo(x, cam.y); ctx.lineTo(x, cam.y + viewH); }
+  for (let y = gy0; y < cam.y + viewH + gs; y += gs) { ctx.moveTo(cam.x, y); ctx.lineTo(cam.x + viewW, y); }
+  ctx.stroke();
+
+  // arena border
+  ctx.strokeStyle = 'rgba(255,179,71,0.35)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(0, 0, ARENA_W, ARENA_H);
+
+  // track marks
+  for (const tr of tracks) {
+    ctx.save();
+    ctx.translate((tr.x1 + tr.x2) / 2, (tr.y1 + tr.y2) / 2);
+    ctx.rotate(tr.a);
+    ctx.fillStyle = `rgba(0,0,0,${tr.alpha})`;
+    ctx.fillRect(-4, -16, 8, 4);
+    ctx.fillRect(-4, 12, 8, 4);
+    ctx.restore();
+  }
+
+  // walls & crates
+  for (const w of walls) {
+    if (w.dead) continue;
+    ctx.fillStyle = w.destructible ? CRATE_COLOR : WALL_COLOR;
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
+    if (w.destructible) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.moveTo(w.x + 3, w.y + 3); ctx.lineTo(w.x + w.w - 3, w.y + w.h - 3);
+      ctx.moveTo(w.x + w.w - 3, w.y + 3); ctx.lineTo(w.x + 3, w.y + w.h - 3);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(w.x, w.y, w.w, 4);
+    }
+  }
+
+  // pickups
+  for (const pk of pickups) {
+    const s = 1 + Math.sin(pk.pulse * 5) * 0.15;
+    ctx.save();
+    ctx.translate(pk.x, pk.y);
+    ctx.scale(s, s);
+    ctx.fillStyle = '#2e6b38';
+    ctx.beginPath(); ctx.arc(0, 0, pk.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#7de88a'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#7de88a';
+    ctx.fillRect(-2.5, -8, 5, 16);
+    ctx.fillRect(-8, -2.5, 16, 5);
+    ctx.restore();
+  }
+
+  // tanks
+  for (const t of tanks) if (!t.dead) drawTank(t);
+
+  // bullets (glow tracers)
+  for (const b of bullets) {
+    ctx.strokeStyle = b.fromPlayer ? 'rgba(255,224,138,0.9)' : 'rgba(255,140,120,0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.fillStyle = '#fff7dd';
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.radius * 0.8, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // particles
+  for (const pt of particles) {
+    ctx.globalAlpha = clamp(pt.life / pt.maxLife, 0, 1);
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+
+  drawMinimap();
+  updateHud();
+}
+
+function drawMinimap() {
+  const sx = minimap.width / ARENA_W, sy = minimap.height / ARENA_H;
+  mctx.clearRect(0, 0, minimap.width, minimap.height);
+  mctx.fillStyle = 'rgba(13,15,18,0.85)';
+  mctx.fillRect(0, 0, minimap.width, minimap.height);
+  mctx.fillStyle = 'rgba(140,150,165,0.8)';
+  for (const w of walls) {
+    if (w.dead) continue;
+    mctx.fillRect(w.x * sx, w.y * sy, Math.max(w.w * sx, 1), Math.max(w.h * sy, 1));
+  }
+  for (const t of tanks) {
+    if (t.dead) continue;
+    mctx.fillStyle = t.isPlayer ? '#7de88a' : '#ff6b5d';
+    mctx.beginPath(); mctx.arc(t.x * sx, t.y * sy, t.isPlayer ? 3 : 2.5, 0, Math.PI * 2); mctx.fill();
+  }
+  // viewport box
+  const cam = getCam();
+  mctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  mctx.lineWidth = 1;
+  mctx.strokeRect(cam.x * sx, cam.y * sy, viewW * sx, viewH * sy);
+}
+
+const hpBar = document.getElementById('hpBar');
+function updateHud() {
+  const pct = clamp(player.hp / player.maxHp, 0, 1);
+  hpBar.style.width = (pct * 100) + '%';
+  hpBar.classList.toggle('low', pct < 0.35);
+  document.getElementById('score').textContent = score;
+  document.getElementById('waveInfo').firstChild.textContent = 'WAVE ' + wave;
+  const enemies = tanks.filter(t => !t.isPlayer).length + spawnQueue;
+  document.getElementById('enemiesLeft').textContent = 'ENEMIES: ' + enemies;
+}
+
+// ---------------- main loop ----------------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  if (state === 'playing') update(dt);
+  if (state !== 'menu') render();
+  requestAnimationFrame(frame);
+}
+// assign enemy ids once at spawn
+const origSpawn = spawnEnemy;
+spawnEnemy = function () {
+  origSpawn();
+  tanks[tanks.length - 1].id = nextId++;
+};
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
